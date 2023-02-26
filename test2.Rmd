@@ -1,0 +1,355 @@
+---
+title: "test2"
+output: html_notebook
+---
+# Introduction 
+## a) Chargement des packages nécessaires
+```{r}
+# Charger les packages nécessaires
+library(ggplot2)
+library(readr)
+library(tidyr)
+library("FactoMineR")
+library("factoextra")
+library(tidyverse)
+library(GGally)
+library(FNN)
+library(patchwork)
+```
+
+
+## b) Chargement des données 
+```{r}
+df <- read_delim("C:/Users/ranus/OneDrive/Bureau/archive(1)/fake_bills.csv")
+df
+```
+les vraiables correspondent à : 
+
+is_genuine : Le billet est-il authentique ? Vrai faux
+diagonale : les mesures diagonales en mm
+height_left : la hauteur du côté gauche en mm
+height_right : la hauteur du côté droit en mm
+margin_low : la marge inférieure en mm
+margin_up : la marge supérieure en mm
+longueur : la longueur en mm
+
+
+
+
+
+# A) Analyse descriptive 
+
+## 1) Valeurs manquantes
+
+On determine ici le nombres de valeurs manquantes.
+```{r}
+sum(is.na(df))
+```
+
+Il y a donc dans l'ensemble du data set, 37 valeurs manquantes. 
+
+Il faut ensuite déterminer leurs localisations. 
+
+```{r}
+count(df,margin_low,sort = TRUE)
+```
+On remarque que les 37 valeurs manquantes sont toutes présentes au même endroit, elles sont toutes dans la variable margin_low.
+
+Il existe plusieurs méthodes pour remplacer les données manquantes 
+- on peut remplacer par la moyenne 
+- on peut remplacer par la medianne 
+- on peut remplacer par la catégorie dominante
+- on peut créer une nouvelle catégorie 
+- on peut faire de la régression linéaire 
+- on peut faire du k-mean 
+
+### a) Régression linéaire 
+
+Comme vu précemment l'une des variables quantitative possède des valeurs manquantes. Nous allons utiliser une méthode de computation via GLM pour les remplacer.
+On commencer par isoler les données manquantes, puis nous retirons la variable target pour éviter d'utiliser les variables target pour l'imputation et biaisé la suite de l'étude.
+
+
+```{r}
+df_na=df[is.na(df$margin_low),]
+df_no_na=na.omit(df)
+df_no_na
+target_no_na=df_no_na$is_genuine
+df_2_no_na=df_no_na[,-1]
+```
+
+#### - critère AIC
+```{r}
+#target=df$is_genuine
+#data=df[,-1]
+```
+
+```{r}
+mod0<-glm(margin_low~1,data=df_2_no_na,family=gaussian)
+mod1<-glm(margin_low~.,data=df_2_no_na,family=gaussian)
+stp<-step(mod0,scope=list(lower=mod0,upper=mod1),direction='both')
+summary(stp)
+```
+Le meilleur modèle est celui qui minimise l'AIC cet à dire celui de la forme $$ margin_low ~ length + height_right + margin_up + 
+    height_left + diagonal $$
+
+
+#### - critère BIC
+```{r}
+mod0<-glm(margin_low~1,data=df_2_no_na,family=gaussian)
+mod1<-glm(margin_low~.,data=df_2_no_na,family=gaussian)
+stp2<-step(mod0,scope=list(lower=mod0,upper=mod1),direction='both',k=log(nrow(df_2_no_na)))
+summary(stp2)
+```
+Le meilleur modèle est celui qui minimise l'AIC cet à dire celui de la forme $$ margin_low ~ length + height_right + margin_up + 
+    height_left + diagonal $$ 
+
+```{r}
+
+
+mod3<-glm(margin_low~.,data=df_no_na[-1],family=gaussian)
+
+#On prédit les valeurs manquante avec le glm
+imputation_value=predict(mod3,df_na[,-1])
+
+#on remplace la colonne d'origine par la prediction, puis nous fusionnons les observtion sans na et celles qui en avaient
+df_na$margin_low=imputation_value #remplacement
+
+df_clean=rbind(df_no_na,df_na)#fusion 
+
+set.seed(42)  # melange des samples
+rows <- sample(nrow(df_clean))
+data <- as.data.frame(df_clean[rows, ])
+data
+```
+
+
+## 2) Visualisation
+### a) Pairplot
+```{r,warning=FALSE}
+ggpairs(data =data ,
+        columns = 2:7,
+        title = "visualisation des variables",
+        upper = list(continuous = wrap("density", alpha = 0.75), combo = "box_no_facet"),
+        lower = list(continuous = wrap("points", alpha = 0.5, size=0.1), combo = "facethist"),
+        diag = list(continuous = wrap("densityDiag", alpha = 0.5)),
+        progress = FALSE,
+        aes(colour=is_genuine))
+```
+
+```{r,warning=FALSE}
+```
+
+On a représenté l'ensembles des variables en fonctions d'elle même en faisant la distinction de couleur sur l'authenticité des billets. 
+
+On obtient une matrice de graphs, elle est composé de trois parties distincts : 
+- le triangle supérieur :
+  - 
+- la diagonale :
+  - la densité des variables conditionnellement à leur authenticité 
+- le triangle inférieur 
+  - 
+
+
+
+
+### b) Boxplot
+```{r,,warning=FALSE}
+ggplot(data)+geom_boxplot(x="is_genuine",y="height_left")->p
+p1 <- ggplot(data, aes(x=is_genuine, y=height_left,fill=is_genuine)) + 
+  geom_boxplot()
+
+p2 <- ggplot(data, aes(x=is_genuine, y=height_right,fill=is_genuine)) + 
+  geom_boxplot()
+
+p3 <- ggplot(data, aes(x=is_genuine, y=diagonal,fill=is_genuine)) + 
+  geom_boxplot()
+
+p4 <- ggplot(data, aes(x=is_genuine, y=margin_low,fill=is_genuine)) + 
+  geom_boxplot()
+
+p5 <- ggplot(data, aes(x=is_genuine, y=margin_up,fill=is_genuine)) + 
+  geom_boxplot()
+
+p6 <- ggplot(data, aes(x=is_genuine, y=length,fill=is_genuine)) + 
+  geom_boxplot()
+
+(p1+p2+p3)/(p4+p5+p6)
+```
+On remarque la présence d'outlier pour toutes les variables.
+Ces valaurs abérrante peuvent être un indicateur des la mauvaise imitation des billets, il est donc déconseillé de les supprimer.
+
+Deplus la présence d'outliers va guider le choix des modèles à utiliser.
+
+Les modèles composé d'arbre de decision sont robuste aux outliers contrairement aux modèles linéaires.
+
+
+
+
+##3) Valeurs aberrantes
+###a) logarithme/standardiser (minimiser l'impacte de ces valeurs)
+```{r}
+
+```
+
+###b) choix du modèle vis à vis des valeurs abhérentes
+```{r}
+
+```
+
+
+
+
+
+
+##4) rééchantillonnage 
+(parce qu'il y a soit VRAI soit FAUX et les FAUX sont au nombre de 500 sur les 1500 données)
+
+Etant donnée le faible nombre d'observation, nous allons plutôt opter pour une méthode d'oversampling pour remédier au problème.
+
+Pour cela nous allons faire du boostrapping, cependant il faudra faire attention car cette méthode favorise le surajustement.
+
+```{r}
+data_na=data[data$is_genuine==FALSE,]
+resample=sample(x = 1:500,size = 400,replace=T)
+
+re_data=data_na[resample,]
+
+data2=rbind(data,re_data)
+
+
+set.seed(43)  # melange des samples
+rows <- sample(nrow(data2))
+data2 <- as.data.frame(data2[rows, ])
+data2
+```
+
+
+
+
+
+
+
+
+
+#B) Modèles de classifications 
+##1) Régression logistique 
+###a) hyperparamètres / Cross-validation
+```{r}
+test_row=sample(nrow(data2)*0.25,replace = FALSE)
+data_train=data2[-test_row,]
+data_test=data2[test_row,]
+```
+
+###b) Métriques d'évaluation
+```{r}
+
+```
+
+
+##2) Arbre de classification
+###a) hyperparamètres / Cross-validation
+```{r}
+
+```
+
+###b) Métriques d'évaluation
+```{r}
+
+```
+
+
+##3) SVM 
+###a) hyperparamètres / Cross-validation
+```{r}
+
+```
+
+###b) Métriques d'évaluation
+```{r}
+
+```
+
+
+##4) ACP 
+###a) hyperparamètres / Cross-validation
+```{r}
+
+```
+
+###b) Métriques d'évaluation
+```{r}
+
+```
+
+
+##5) Forêt aléatoire  
+###a) hyperparamètres / Cross-validation
+```{r}
+
+```
+
+###b) Métriques d'évaluation
+```{r}
+
+```
+
+
+##6) KNN
+###a) hyperparamètres / Cross-validation
+```{r}
+
+```
+
+###b) Métriques d'évaluation
+```{r}
+
+```
+
+
+
+
+
+#C) Conclusion
+
+
+#D) Bibliographie
+
+https://stackoverflow.com/questions/19400494/running-a-stepwise-linear-model-with-bic-criterion
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
