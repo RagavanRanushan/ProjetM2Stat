@@ -15,6 +15,15 @@ library(tidyverse)
 library(GGally)
 library(FNN)
 library(patchwork)
+library(caret)
+library(lattice)
+library(tree)
+library(Metrics)
+library(dplyr)
+library(e1071)
+library(randomForest)
+library(FNN)
+library(pROC)
 ```
 
 
@@ -44,6 +53,7 @@ longueur : la longueur en mm
 On determine ici le nombres de valeurs manquantes.
 ```{r}
 sum(is.na(df))
+heatmap(matrix(as.numeric(is.na(df)),ncol = 7))
 ```
 
 Il y a donc dans l'ensemble du data set, 37 valeurs manquantes. 
@@ -63,11 +73,23 @@ Il existe plusieurs méthodes pour remplacer les données manquantes
 - on peut faire de la régression linéaire 
 - on peut faire du k-mean 
 
+
+```{r}
+cor(df)
+```
+
+On ne peut pas se prononcer sur les corrélation linéaire entre margin_low et les autres variables.
+Cependant on remarque que is_genuine est fortement corrélé avec length et anti corrélé avec margin_up
+
 ### a) Régression linéaire 
 
 Comme vu précemment l'une des variables quantitative possède des valeurs manquantes. Nous allons utiliser une méthode de computation via GLM pour les remplacer.
 On commencer par isoler les données manquantes, puis nous retirons la variable target pour éviter d'utiliser les variables target pour l'imputation et biaisé la suite de l'étude.
 
+```{r}
+df%>%
+  ggplot()+geom_histogram(aes(x=margin_low,alpha=0.05))
+```
 
 ```{r}
 df_na=df[is.na(df$margin_low),]
@@ -84,8 +106,8 @@ df_2_no_na=df_no_na[,-1]
 ```
 
 ```{r}
-mod0<-glm(margin_low~1,data=df_2_no_na,family=gaussian)
-mod1<-glm(margin_low~.,data=df_2_no_na,family=gaussian)
+mod0<-glm(margin_low~1,data=df_2_no_na,family='gaussian')
+mod1<-glm(margin_low~.,data=df_2_no_na,family='gaussian')
 stp<-step(mod0,scope=list(lower=mod0,upper=mod1),direction='both')
 summary(stp)
 ```
@@ -175,8 +197,50 @@ p6 <- ggplot(data, aes(x=is_genuine, y=length,fill=is_genuine)) +
 
 (p1+p2+p3)/(p4+p5+p6)
 ```
-On remarque la présence d'outlier pour toutes les variables.
-Ces valaurs abérrante peuvent être un indicateur des la mauvaise imitation des billets, il est donc déconseillé de les supprimer.
+
+A l'exception de diagonal, toutes les variables ont un impact sur la variable is_genuine. De plus margin_low,legnth et height_left ont des variances différentes.
+```{r}
+bartlett.test(data$margin_low,data$is_genuine)
+```
+
+```{r}
+bartlett.test(data$height_left,data$is_genuine)
+```
+
+```{r}
+bartlett.test(data$length,data$is_genuine)
+```
+```{r}
+loga<-function(data){
+  n=ncol(data)  
+  for(i in 2:n){
+    data[,i]=log(data[,i])
+  }
+  return(data)
+}
+log_data=loga(data)
+```
+
+
+```{r}
+
+bartlett.test(log_data$margin_low,log_data$is_genuine)
+reg1<-lm(margin_low~is_genuine,log_data)
+anova(reg1)
+```
+```{r}
+bartlett.test(log_data$height_left,log_data$is_genuine)
+reg2<-lm(height_left~is_genuine,log_data)
+anova(reg2)
+```
+
+```{r}
+bartlett.test(log_data$length,log_data$is_genuine)
+reg3<-lm(length~is_genuine,log_data)
+anova(reg3)
+```
+
+On remarque également la présence d'outlier pour toutes les variables.
 
 Deplus la présence d'outliers va guider le choix des modèles à utiliser.
 
@@ -223,6 +287,9 @@ data2 <- as.data.frame(data2[rows, ])
 data2
 ```
 
+```{r}
+#write.csv(data, "C:/Users/ranus/OneDrive/Bureau/DataScience/ProjetM2Stat/Data.csv", row.names=FALSE)
+```
 
 
 
@@ -233,11 +300,30 @@ data2
 
 #B) Modèles de classifications 
 ##1) Régression logistique 
+
+
+
+cor(df)
 ###a) hyperparamètres / Cross-validation
+
+
 ```{r}
-test_row=sample(nrow(data2)*0.25,replace = FALSE)
-data_train=data2[-test_row,]
-data_test=data2[test_row,]
+#encodage de la variable target
+data2$is_genuine=as.factor(as.integer(data2$is_genuine))
+data$is_genuine=as.factor(as.integer(data$is_genuine))
+
+# division des donnée en donnée train et donnée test
+test_row=sample(nrow(data)*0.25,replace = FALSE)
+data_train=data[-test_row,]
+data_test=data[test_row,]
+
+#fitControl=trainControl(method="cv",number=10,savePrediction=TRUE)
+
+#log_reg=glm(is_genuine~.,data=data_train,family = binomial(),method = "glm",trControl=fitControl)
+
+log_reg=glm(is_genuine ~ .,data=data_train,family = binomial((link = "logit")))
+as.data.frame(predict(log_reg,data_test),type='response')
+summary(log_reg)
 ```
 
 ###b) Métriques d'évaluation
@@ -249,31 +335,124 @@ data_test=data2[test_row,]
 ##2) Arbre de classification
 ###a) hyperparamètres / Cross-validation
 ```{r}
+#refaire arbre pour diagonal + height_left et un pour diagonal + length
+tr<-tree(is_genuine~.,data=data_train,control=tree.control(nobs=nrow(data_train),mincut=5,minsize=10))
+
+y_hat_tr<-predict(tr,newdata=data_test)
+
+
 
 ```
+On obtient des proba. On ne va conserver que les valeurs avec la plus grande proba
+
+```{r}
+n=nrow(y_hat_tr)
+y=replicate(n,0)
+for(i in 1:n){
+  if(y_hat_tr[i,2]>y_hat_tr[i,1]){
+    y[i]=1
+  }
+}
+y_hat_tr=y
+```
+La table de contingence nous montre de très bon resultat pour l'arbre.
+```{r}
+
+heatmap(table(data_test$is_genuine,y_hat_tr))
+```
+```{r}
+cbind(data_test,y_hat_tr)%>%
+  ggplot(aes(x=height_left,y=margin_low,color=is_genuine,shape=as.factor(y_hat_tr)))+geom_point()
+
+```
+
+
 
 ###b) Métriques d'évaluation
 ```{r}
+x<-c("modele","accuracy","f1","recall","precision")
+tree_metric<-cbind(
+  as.data.frame(c("tree")),
+  as.data.frame(accuracy(data_test$is_genuine,y_hat_tr)),
+  as.data.frame(f1(data_test$is_genuine,y_hat_tr)),
+  as.data.frame(recall(data_test$is_genuine,y_hat_tr)),
+  as.data.frame(precision(data_test$is_genuine,y_hat_tr)))
 
+
+colnames(tree_metric) <- x
 ```
 
+```{r}
+table(data_test$is_genuine,y_hat_tr)
+
+(122+248)/(122+248+1+4)
+```
+
+```{r}
+table(as.numeric(data_test$is_genuine),as.numeric(y_hat_tr))
+precision(actual =as.numeric(data_test$is_genuine),predicted = as.numeric(y_hat_tr) )
+```
 
 ##3) SVM 
 ###a) hyperparamètres / Cross-validation
-```{r}
 
+
+```{r}
+k=5
+kernels<-c("linear","radial basis","sigmoid",'polynomial')
+
+for(ker in kernels){
+
+  n=nrow(data_train)
+  valid_size=n%/%k
+  for (i in 1:k){
+    d=valid_size*(i-1)
+    e=valid_size*i
+    valid_data=data_train[c(d:e),]
+    data_train2=data_train[-c(d:e),]
+    
+    svmfit = svm(is_genuine ~ ., data = data_train2, kernel = kernels, cost = 10, scale = FALSE)
+    pred<-predict(svmfit,newdata=valid_data)
+    print(paste0('model: SVM  kernel:',ker, "  precision: " ,precision(as.numeric(as.vector(valid_data$is_genuine)),as.numeric(as.vector(pred))),"  recall:", recall(as.numeric(as.vector(valid_data$is_genuine)),as.numeric(as.vector(pred)))))
+  }
+ print( paste0(" "))
+ print( paste0(" "))
+ print( paste0(" "))
+ print( paste0(" "))
+  }
 ```
+
+Il semblerait que le meilleur noyeau est le sigmoid.
+
+```{r}
+svmfit = svm(is_genuine ~ ., data = data_train2, kernel = "sigmoid", cost = 10, scale = FALSE)
+y_hat_svm<-predict(svmfit,newdata=valid_data)
+```
+
 
 ###b) Métriques d'évaluation
 ```{r}
-
+tree_metric<-cbind(
+  as.data.frame(c("svm")),
+  as.data.frame(accuracy(data_test$is_genuine,y_hat_svm)),
+  as.data.frame(f1(data_test$is_genuine,y_hat_svm)),
+  as.data.frame(recall(data_test$is_genuine,y_hat_svm)),
+  as.data.frame(precision(data_test$is_genuine,y_hat_svm)))
 ```
 
 
 ##4) ACP 
 ###a) hyperparamètres / Cross-validation
 ```{r}
+pca=PCA(X = data2[,-1],scale.unit = T)
 
+fviz_pca_ind(pca,
+             geom.ind = "point", # Montre les points seulement (mais pas le "text")
+             col.ind = data2$is_genuine, # colorer by groups
+             palette = c("#00AFBB", "#E7B800"),
+             addEllipses = TRUE, # Ellipses de concentration
+             legend.title = "Groups"
+             )
 ```
 
 ###b) Métriques d'évaluation
@@ -284,27 +463,137 @@ data_test=data2[test_row,]
 
 ##5) Forêt aléatoire  
 ###a) hyperparamètres / Cross-validation
+
 ```{r}
+k=5
+ntrees=c(10,50,100)
+mtrys=c(1,2,3)
+
+for(ntree in ntrees){
+  for(mtry in mtrys){
+
+  n=nrow(data_train)
+  valid_size=n%/%k
+  for (i in 1:k){
+    d=valid_size*(i-1)
+    e=valid_size*i
+    valid_data=data_train[c(d:e),]
+    data_train2=data_train[-c(d:e),]
+    
+    rf<-randomForest(is_genuine~.,data=data_train2,mtry=mtry,ntree=ntree)
+    pred<-predict(rf,newdata=valid_data)
+    print(paste0('model: RandomForest  mtry:',mtry,' ntree: ',ntree, "  precision: " ,precision(as.numeric(as.vector(valid_data$is_genuine)),as.numeric(as.vector(pred))),"  recall:", recall(as.numeric(as.vector(valid_data$is_genuine)),as.numeric(as.vector(pred)))))
+  }
+ print( paste0(" "))
+ print( paste0(" "))
+ print( paste0(" "))
+ print( paste0(" "))
+}}
 
 ```
 
+GridSearch sur le nombre de variable utilisé a chaque split mtry et le nombres d'arbres
+mtry={1,2,3} et ntree={10,50,100} et une cross validation du type 5Fold et
+
+Meilleurs modèle
+mtry:1 ntree: 50
+
+
+
 ###b) Métriques d'évaluation
 ```{r}
+rf<-randomForest(is_genuine~.,data=data_train,mtry=1,ntree=50)
+y_hat_rf<-predict(rf,data_test)
+cbind(
+  as.data.frame(c("random Forest")),
+  as.data.frame(accuracy(data_test$is_genuine,y_hat_rf)),
+  as.data.frame(f1(data_test$is_genuine,y_hat_rf)),
+  as.data.frame(recall(data_test$is_genuine,y_hat_rf)),
+  as.data.frame(precision(as.numeric(data_test$is_genuine),as.numeric(y_hat_rf))))
 
 ```
 
 
 ##6) KNN
 ###a) hyperparamètres / Cross-validation
+
+
 ```{r}
 
+k=5
+Kcluster=c(1:5)
+
+for(K in Kcluster){
+
+  n=nrow(data_train)
+  valid_size=n%/%k
+  for (i in 1:k){
+    d=valid_size*(i-1)
+    e=valid_size*i
+    valid_data=data_train[c(d:e),]
+    data_train2=data_train[-c(d:e),]
+    
+    pred<-knn(train=as.matrix(data_train2[,-1]),test=as.matrix(valid_data[,-1]),cl =data_train2$is_genuine,k=K)
+    
+    print(paste0('model: knn  k:',K, "  precision: " ,precision(as.numeric(as.vector(valid_data$is_genuine)),as.numeric(as.vector(pred))),"  recall:", recall(as.numeric(as.vector(valid_data$is_genuine)),as.numeric(as.vector(pred)))))
+  }
+ print( paste0(" "))
+ print( paste0(" "))
+ print( paste0(" "))
+ print( paste0(" "))
+}
+
+
+
+knn2<-knn(train=as.matrix(data_train[,-1]),test=as.matrix(data_test[,-1]),cl =data_train$is_genuine,k=2)
 ```
+
+Il semblerait que le meilleurs k soit 3.
+Cependant la methode elbow serait peut etre plus adéquat pour trouver le k optimal.
+
+
+
+
+
 
 ###b) Métriques d'évaluation
+
+```{r}
+
+knn2<-knn(train=as.matrix(data_train[,-1]),test=as.matrix(data_test[,-1]),cl =data_train$is_genuine,k=3)
+accuracy(actual = data_test$is_genuine,predicted = knn2)
+precision(actual = data_test$is_genuine,predicted = knn2)
+```
+
+```{r}
+knn_metric<-cbind(
+  as.data.frame(c("knn")),
+  as.data.frame(accuracy(data_test$is_genuine,knn2)),
+  as.data.frame(f1(as.numeric(as.vector(data_test$is_genuine)),as.numeric(as.vector(knn2)))),
+  as.data.frame(recall(as.numeric(as.vector(data_test$is_genuine)),as.numeric(as.vector(knn2)))),
+  as.data.frame(precision(as.numeric(as.vector(data_test$is_genuine)),as.numeric(as.vector(knn2)))))
+
+
+colnames(knn_metric) <- x
+knn_metric
+```
+
+table de contingence
+```{r}
+table(as.vector(data_test$is_genuine),as.vector(knn2))
+```
+
+
+```{r}
+rocobj <- roc(as.numeric(data_test$is_genuine), as.numeric(knn2))
+
+#create ROC plot
+ggroc(rocobj)
+```
+
 ```{r}
 
 ```
-
 
 
 
@@ -317,37 +606,110 @@ data_test=data2[test_row,]
 https://stackoverflow.com/questions/19400494/running-a-stepwise-linear-model-with-bic-criterion
 
 
+```{r}
+actual <- c(1, 1, 1, 0, 0, 0)
+predicted <- c(1, 1, 1, 1, 1, 1)
+table(actual, predicted)
+```
 
 
 
+```{r}
+k=5
+ntrees=c(10,50,100)
+mtrys=c(1,2,3)
+
+for(ntree in ntrees){
+  for(mtry in mtrys){
+
+  n=nrow(data_train)
+  valid_size=n%/%k
+  for (i in 1:k){
+    d=valid_size*(i-1)
+    e=valid_size*i
+    valid_data=data_train[c(d:e),]
+    data_train2=data_train[-c(d:e),]
+    
+    rf<-randomForest(is_genuine~.,data=data_train2,mtry=mtry,ntree=ntree)
+    pred<-predict(rf,newdata=valid_data)
+    print(paste0('model: RandomForest  mtry:',mtry,' ntree: ',ntree, "  precision: " ,precision(as.numeric(as.vector(valid_data$is_genuine)),as.numeric(as.vector(pred))),"  recall:", recall(as.numeric(as.vector(valid_data$is_genuine)),as.numeric(as.vector(pred)))))
+  }
+ print( paste0(" "))
+ print( paste0(" "))
+ print( paste0(" "))
+ print( paste0(" "))
+}}
 
 
 
+```
+GridSearch sur le nombre de variable utilisé a chaque split mtry et le nombres d'arbres
+mtry={1,2,3} et ntree={10,50,100} et une cross validation du type 5Fold et
+
+Meilleurs modèle
+mtry:1 ntree: 50
+
+
+```{r}
+k=5
+kernels<-c("linear","radial basis","sigmoid",'polynomial')
+
+for(ker in kernels){
+
+  n=nrow(data_train)
+  valid_size=n%/%k
+  for (i in 1:k){
+    d=valid_size*(i-1)
+    e=valid_size*i
+    valid_data=data_train[c(d:e),]
+    data_train2=data_train[-c(d:e),]
+    
+    svmfit = svm(is_genuine ~ ., data = data_train2, kernel = kernels, cost = 10, scale = FALSE)
+    pred<-predict(svmfit,newdata=valid_data)
+    print(paste0('model: SVM  kernel:',ker, "  precision: " ,precision(as.numeric(as.vector(valid_data$is_genuine)),as.numeric(as.vector(pred))),"  recall:", recall(as.numeric(as.vector(valid_data$is_genuine)),as.numeric(as.vector(pred)))))
+  }
+ print( paste0(" "))
+ print( paste0(" "))
+ print( paste0(" "))
+ print( paste0(" "))
+  }
+```
+
+Il semblerait que le meilleur noyeau est le sigmoid.
+
+
+```{r}
+
+k=5
+Kcluster=c(1:5)
+
+for(K in Kcluster){
+
+  n=nrow(data_train)
+  valid_size=n%/%k
+  for (i in 1:k){
+    d=valid_size*(i-1)
+    e=valid_size*i
+    valid_data=data_train[c(d:e),]
+    data_train2=data_train[-c(d:e),]
+    
+    pred<-knn(train=as.matrix(data_train2[,-1]),test=as.matrix(valid_data[,-1]),cl =data_train2$is_genuine,k=K)
+    
+    print(paste0('model: knn  k:',K, "  precision: " ,precision(as.numeric(as.vector(valid_data$is_genuine)),as.numeric(as.vector(pred))),"  recall:", recall(as.numeric(as.vector(valid_data$is_genuine)),as.numeric(as.vector(pred)))))
+  }
+ print( paste0(" "))
+ print( paste0(" "))
+ print( paste0(" "))
+ print( paste0(" "))
+}
 
 
 
+knn2<-knn(train=as.matrix(data_train[,-1]),test=as.matrix(data_test[,-1]),cl =data_train$is_genuine,k=2)
+```
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Il semblerait que le meilleurs k soit 3.
+Cependant la methode elbow serait peut etre plus adéquat pour trouver le k optimal.
 
 
 
