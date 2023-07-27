@@ -123,7 +123,7 @@ stp2<-step(mod0,scope=list(lower=mod0,upper=mod1),direction='both',k=log(nrow(df
 summary(stp2)
 ```
 Le meilleur modèle est celui qui minimise l'AIC cet à dire celui de la forme $$ margin_low ~ length + height_right + margin_up + 
-    height_left + diagonal $$ 
+    height_left + diagonal $$. Nous n'avonse pas utiliser la variable target pour l'imputation pour éviter d'influencer les futures prédictions.
 
 ```{r}
 
@@ -171,8 +171,9 @@ On obtient une matrice de graphs, elle est composé de trois parties distincts :
 - le triangle inférieur 
   - 
 
+Mise à part la variable diagonal, les densités conditionnelle de toutes les variables sont différentes
 
-
+-On remarque également une séparation entre les deux deux classe pour la variable length. Ainsi les modèles avec une séparation linéaire pourrait donner de bon resultat.
 
 ### b) Boxplot
 ```{r,,warning=FALSE}
@@ -198,7 +199,14 @@ p6 <- ggplot(data, aes(x=is_genuine, y=length,fill=is_genuine)) +
 (p1+p2+p3)/(p4+p5+p6)
 ```
 
-A l'exception de diagonal, toutes les variables ont un impact sur la variable is_genuine. De plus margin_low,legnth et height_left ont des variances différentes.
+On remarque de nouveau qu'à l'exception de diagonal, toutes les variables ont un impact sur la variable is_genuine. 
+
+On remarque la présence d'outliers sur toutes les variables. Les modèles paramétrique y sont sensible, ainsi dans l'éventualité ou  nous utiliseront des modèle paramétriques il faudra envisager de standardiser nos variable ou d'appliquer log dessus.
+
+Les modèles non paramétrique comme les arbres ou le knn sont robuste face aux outliers.
+
+De plus margin_low,legnth et height_left semble avoir des variances différentes.
+Verifions cette hypothèse avec un test de bartlet
 ```{r}
 bartlett.test(data$margin_low,data$is_genuine)
 ```
@@ -210,6 +218,8 @@ bartlett.test(data$height_left,data$is_genuine)
 ```{r}
 bartlett.test(data$length,data$is_genuine)
 ```
+On peut rejeter l'hypothèse d'homogéinité des variance.
+
 ```{r}
 loga<-function(data){
   n=ncol(data)  
@@ -316,19 +326,63 @@ data$is_genuine=as.factor(as.integer(data$is_genuine))
 test_row=sample(nrow(data)*0.25,replace = FALSE)
 data_train=data[-test_row,]
 data_test=data[test_row,]
+```
 
-#fitControl=trainControl(method="cv",number=10,savePrediction=TRUE)
+Après encodage de la variable cible, on a:
+-0=False
+-1=True
 
-#log_reg=glm(is_genuine~.,data=data_train,family = binomial(),method = "glm",trControl=fitControl)
+Nous allons chercher à minimiser les erreurs sur les faux positif cet à dire diminuer le risque de dire qu'un faux billet est un vrai. Nous allons donc utiliser la métrique recall.
 
-log_reg=glm(is_genuine ~ .,data=data_train,family = binomial((link = "logit")))
-as.data.frame(predict(log_reg,data_test),type='response')
-summary(log_reg)
+Nous utiliserons également la métrique précision pouur évaluer l'erreur faites en affirmant qu'un billet est faux alors qu'il est vrai.
+
+Et enfin on utilisera la métrique F1 qui combine les deux.
+
+```{r}
+
+
+log_reg=glm(is_genuine ~ .,data=data_train,family = binomial)
+as.data.frame(as.vector(predict(log_reg,data_test,type='respons')))
+
+proba_rl=as.vector(predict(log_reg,data_test,type='respons'))
+
+pred_rl=replicate(length(proba_rl),0)
+
+for(i in 1: length(proba_rl)){
+  if(proba_rl[i]>0.5){
+    pred_rl[i]=1
+  }
+  else{
+    pred_rl[i]=0
+  }
+}
+pred_rl
 ```
 
 ###b) Métriques d'évaluation
 ```{r}
+x<-c("modele","accuracy","f1","recall","precision")
+rl_metric<-cbind(
+  as.data.frame(c("regression logistique")),
+  as.data.frame(accuracy(data_test$is_genuine,pred_rl)),
+  as.data.frame(f1(data_test$is_genuine,pred_rl)),
+  as.data.frame(recall(data_test$is_genuine,pred_rl)),
+  precision(as.numeric(as.vector(data_test$is_genuine)),as.numeric((pred_rl))))
 
+
+colnames(tree_metric) <- x
+```
+```{r}
+rocobj <- roc(as.numeric(data_test$is_genuine), as.numeric(pred_rl))
+
+
+ggroc(rocobj)
+
+auc(as.numeric(data_test$is_genuine), as.numeric(pred_rl))
+```
+
+```{r}
+auc(as.numeric(data_test$is_genuine), as.numeric(pred_rl))
 ```
 
 
@@ -358,7 +412,7 @@ y_hat_tr=y
 La table de contingence nous montre de très bon resultat pour l'arbre.
 ```{r}
 
-heatmap(table(data_test$is_genuine,y_hat_tr))
+table(data_test$is_genuine,y_hat_tr)
 ```
 ```{r}
 cbind(data_test,y_hat_tr)%>%
@@ -376,21 +430,27 @@ tree_metric<-cbind(
   as.data.frame(accuracy(data_test$is_genuine,y_hat_tr)),
   as.data.frame(f1(data_test$is_genuine,y_hat_tr)),
   as.data.frame(recall(data_test$is_genuine,y_hat_tr)),
-  as.data.frame(precision(data_test$is_genuine,y_hat_tr)))
+  as.data.frame(precision(as.numeric(as.vector(data_test$is_genuine)),as.numeric(as.vector(pred)))))
 
 
 colnames(tree_metric) <- x
+tree_metric
 ```
 
 ```{r}
 table(data_test$is_genuine,y_hat_tr)
 
-(122+248)/(122+248+1+4)
+
 ```
 
 ```{r}
-table(as.numeric(data_test$is_genuine),as.numeric(y_hat_tr))
-precision(actual =as.numeric(data_test$is_genuine),predicted = as.numeric(y_hat_tr) )
+rocobj <- roc(as.numeric(data_test$is_genuine), as.numeric(y_hat_tr))
+
+
+ggroc(rocobj)
+```
+```{r}
+auc(as.numeric(data_test$is_genuine), as.numeric(y_hat_tr))
 ```
 
 ##3) SVM 
@@ -425,23 +485,66 @@ for(ker in kernels){
 Il semblerait que le meilleur noyeau est le sigmoid.
 
 ```{r}
-svmfit = svm(is_genuine ~ ., data = data_train2, kernel = "sigmoid", cost = 10, scale = FALSE)
-y_hat_svm<-predict(svmfit,newdata=valid_data)
+svmfit = svm(is_genuine ~ ., data = data_train2, kernel = "linear", cost = 10, scale = FALSE)
+y_hat_svm<-predict(svmfit,newdata=data_test)
 ```
 
 
 ###b) Métriques d'évaluation
 ```{r}
-tree_metric<-cbind(
+svm_metric<-cbind(
   as.data.frame(c("svm")),
   as.data.frame(accuracy(data_test$is_genuine,y_hat_svm)),
   as.data.frame(f1(data_test$is_genuine,y_hat_svm)),
-  as.data.frame(recall(data_test$is_genuine,y_hat_svm)),
-  as.data.frame(precision(data_test$is_genuine,y_hat_svm)))
+  as.data.frame(recall(as.numeric(as.vector(data_test$is_genuine)),as.numeric(as.vector(y_hat_svm)))),
+  as.data.frame(precision(as.numeric(as.vector(data_test$is_genuine)),as.numeric(as.vector(y_hat_svm)))))
+
+colnames(svm_metric) <- x
+svm_metric
+```
+
+```{r}
+auc(as.numeric(data_test$is_genuine), as.numeric(y_hat_svm))
 ```
 
 
+table de contingence
+```{r}
+
+
+table(y_hat_svm,data_test$is_genuine)
+```
+
+
+
+```{r}
+rocobj <- roc(as.numeric(data_test$is_genuine), as.numeric(y_hat_svm))
+
+
+ggroc(rocobj)
+```
+
+Il est normal d'avoir une meilleure performence avec le kernel linéaire car nous avons vu plus haut que la variable cible avait une belle séparation linéaire pour ceertaine variable.
+
+Si nous avions choisie un autre kernel, nous aurions eu des resultats nettement moins bon. Ci dessous on peu voir la courbe pour le SVM avec un kernel sigmoid.
+
+
+```{r}
+svmfit = svm(is_genuine ~ ., data = data_train2, kernel = "sigmoid", cost = 10, scale = FALSE)
+y_hat_svm<-predict(svmfit,newdata=data_test)
+
+rocobj <- roc(as.numeric(data_test$is_genuine), as.numeric(y_hat_svm))
+
+
+ggroc(rocobj)
+
+```
+On remarque que la courbe ROC du SVM sigmoid correspond à la 1er bissectrice, ce qui indique que le modèle assigne  aléatoirement les classes pendant la prédiction.
+
 ##4) ACP 
+
+Nous pouvons également considérer notre problème comme un problème de clustering.
+
 ###a) hyperparamètres / Cross-validation
 ```{r}
 pca=PCA(X = data2[,-1],scale.unit = T)
@@ -455,11 +558,19 @@ fviz_pca_ind(pca,
              )
 ```
 
+On remarque que la deuxième composante de l'acp explique très peu la variable is_genuine. De plus cette composante est fortement corréler à la variable diagonal
+qui est très faiblement impacté par la variable target.
+
+On remarque également que la première composante explique bien la variabe cible. La classe 1 lui étant anti corréler tandis que la classe 0 est corréler.
+
+De plus toutes les autres variable lui sont correler/anti corréler avec.
+
 ###b) Métriques d'évaluation
 ```{r}
 
 ```
 
+L'ACP fait tout de même des erreurs et commet plus d'erreur que les autres méthodes.
 
 ##5) Forêt aléatoire  
 ###a) hyperparamètres / Cross-validation
@@ -504,20 +615,33 @@ mtry:1 ntree: 50
 ```{r}
 rf<-randomForest(is_genuine~.,data=data_train,mtry=1,ntree=50)
 y_hat_rf<-predict(rf,data_test)
-cbind(
+rf_metric=cbind(
   as.data.frame(c("random Forest")),
   as.data.frame(accuracy(data_test$is_genuine,y_hat_rf)),
   as.data.frame(f1(data_test$is_genuine,y_hat_rf)),
-  as.data.frame(recall(data_test$is_genuine,y_hat_rf)),
-  as.data.frame(precision(as.numeric(data_test$is_genuine),as.numeric(y_hat_rf))))
+ as.data.frame(recall(as.numeric(as.vector(data_test$is_genuine)),as.numeric(as.vector(y_hat_rf)))),
+  as.data.frame(precision(as.numeric(as.vector(data_test$is_genuine)),as.numeric(as.vector(y_hat_rf)))))
 
+colnames(rf_metric) <- x
+rf_metric
+```
+```{r}
+rocobj <- roc(as.numeric(data_test$is_genuine), as.numeric(y_hat_rf))
+
+
+ggroc(rocobj)
+```
+
+
+```{r}
+auc(as.numeric(as.vector(data_test$is_genuine)),as.numeric(as.vector(y_hat_rf)))
 ```
 
 
 ##6) KNN
 ###a) hyperparamètres / Cross-validation
 
-
+GridSearch sur le paramètre k
 ```{r}
 
 k=5
@@ -587,18 +711,26 @@ table(as.vector(data_test$is_genuine),as.vector(knn2))
 ```{r}
 rocobj <- roc(as.numeric(data_test$is_genuine), as.numeric(knn2))
 
-#create ROC plot
+
 ggroc(rocobj)
 ```
 
 ```{r}
-
+auc(as.numeric(data_test$is_genuine), as.numeric(knn2))
 ```
 
 
 
 
 #C) Conclusion
+
+Si nous cherchons à minimiser l'erreur faites sur qui est faites en déclarant qu'un billet est vrai alors qu'il est faux le meilleurs des modèles tester est....
+
+Si au contraire on cherche plutôt à minimiser le fait de déclarer qu'on déclare un billet faux alors qu'il est vrai on priviligiera le modèle....
+
+Enfin si on cherche un modèle équilibré, on prendra...
+
+
 
 
 #D) Bibliographie
@@ -611,6 +743,9 @@ actual <- c(1, 1, 1, 0, 0, 0)
 predicted <- c(1, 1, 1, 1, 1, 1)
 table(actual, predicted)
 ```
+
+
+
 
 
 
@@ -639,8 +774,6 @@ for(ntree in ntrees){
  print( paste0(" "))
  print( paste0(" "))
 }}
-
-
 
 ```
 GridSearch sur le nombre de variable utilisé a chaque split mtry et le nombres d'arbres
@@ -675,13 +808,13 @@ for(ker in kernels){
   }
 ```
 
-Il semblerait que le meilleur noyeau est le sigmoid.
+Il semblerait que le meilleur noyeau est le linéaire.
 
 
 ```{r}
 
 k=5
-Kcluster=c(1:5)
+Kcluster=c(1:7)
 
 for(K in Kcluster){
 
@@ -708,10 +841,25 @@ for(K in Kcluster){
 knn2<-knn(train=as.matrix(data_train[,-1]),test=as.matrix(data_test[,-1]),cl =data_train$is_genuine,k=2)
 ```
 
-Il semblerait que le meilleurs k soit 3.
-Cependant la methode elbow serait peut etre plus adéquat pour trouver le k optimal.
+Il semblerait que le meilleurs k soit 7.
+La methode elbow nous indique que le meilleur k est 7. Ce point est confirmer par une cross validation.
 
 
 
 
+```{r}
+valid_size=nrow(data_train)*0.25
+valid_data=data_train[c(1:valid_size),]
+data_train2=data_train[-c(1:valid_size),]
+X=replicate(10,0)
+for(k in c(1:10)){
+  
+  pred<-knn(train=as.matrix(data_train2[,-1]),test=as.matrix(valid_data[,-1]),cl =data_train2$is_genuine,k=k)
+  #X[k]=recall(as.numeric(as.vector(valid_data$is_genuine)),as.numeric(as.vector(pred)))
+  X[k]=mean(pred!=valid_data$is_genuine)
+}
+
+as.data.frame(cbind(c(1:10),X))%>%
+  ggplot(aes(x=V1,y=X))+geom_line()
+```
 
